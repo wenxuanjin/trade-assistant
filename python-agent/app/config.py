@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     openai_base_url: str = "https://api.deepseek.com"
     openai_model: str = "deepseek-v4-flash"
+    trade_service_base_url: str = "http://localhost:8080"
 
 
 settings = Settings()

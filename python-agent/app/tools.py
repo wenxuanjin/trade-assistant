@@ -4,8 +4,10 @@ Start with one tool. Add more later as extra @tool functions,
 then pass them in app/agent.py.
 """
 
+import httpx
 from langchain_core.tools import tool
 
+from app.config import settings
 from app.schemas import TradeAccount, TradeFlow, TradeFlowStep
 
 # 内存假数据，相当于一个写死的 Repository。后面再换成真实查询。
@@ -34,6 +36,13 @@ def _lookup(order_id: str) -> dict[str, str] | None:
     return None
 
 
+def _normalize_order_id(order_id: str) -> str:
+    key = order_id.strip().upper()
+    if not key.startswith("ORD-"):
+        return f"ORD-{key}"
+    return key
+
+
 @tool
 def get_order(order_id: str) -> str:
     """Look up an order by order id.
@@ -41,11 +50,26 @@ def get_order(order_id: str) -> str:
     Use when the user asks about an order's status, item, or amount.
     """
     print(f"get_order: {order_id}")
-    order = _lookup(order_id)
-    if order is None:
-        return f"Order {order_id} was not found."
+    normalized = _normalize_order_id(order_id)
+    url = f"{settings.trade_service_base_url.rstrip('/')}/api/orders/{normalized}"
+    try:
+        print(f"url: {url}")
+        response = httpx.get(url, timeout=5.0)
+    except httpx.HTTPError:
+        return "Trade service is unavailable."
+
+    if response.status_code == 404:
+        return f"Order {normalized} was not found."
+    if response.status_code != 200:
+        return "Trade service is unavailable."
+
+    try:
+        order = response.json()
+    except ValueError:
+        return "Trade service is unavailable."
+
     return (
-        f"order_id={order['order_id']}, status={order['status']}, "
+        f"order_id={order['orderId']}, status={order['status']}, "
         f"item={order['item']}, amount={order['amount']}"
     )
 
