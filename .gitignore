@@ -12,3 +12,6 @@ __pycache__/
 
 # Secrets（不忽略 .env.example）
 .env
+
+# Java / Maven
+target/
