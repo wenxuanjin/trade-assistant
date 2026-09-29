@@ -1,0 +1,14 @@
+# 无前导 / 的规则匹配任意层级，例如 python-agent/venv、python-agent/.env
+
+# OS
+.DS_Store
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets（不忽略 .env.example）
+.env
