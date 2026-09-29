@@ -4,7 +4,7 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
-from app.tools import get_order
+from app.tools import get_order, get_trade_account, get_trade_flow
 
 # 模块级单例，导入时创建一次。相当于 @Bean。
 _llm = ChatOpenAI(
@@ -15,12 +15,15 @@ _llm = ChatOpenAI(
 
 graph = create_agent(
     _llm,
-    tools=[get_order],
+    tools=[get_order, get_trade_flow, get_trade_account],
     system_prompt=(
         "You are an order assistant. "
-        "When the user asks about an order, call get_order with the order id. "
         "If no order id is given, ask for one. "
-        "Answer in the user's language, using only the tool result."
+        "Answer in the user's language, using only the tool result. "
+        "You may call one or more tools when necessary: "
+        "1. order status, item, or amount → get_order "
+        "2. trade steps, payment/shipping/delivery timeline → get_trade_flow "
+        "3. payment account, payer, channel, or account number → get_trade_account"
     ),
 )
 
