@@ -51,6 +51,71 @@ class GetOrderTests(unittest.TestCase):
 
         self.assertEqual(result, "Trade service is unavailable.")
 
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_timeout(self, mock_get):
+        mock_get.side_effect = httpx.ReadTimeout("timed out")
+
+        result = get_order.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service timed out.")
+
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_http_500(self, mock_get):
+        response = Mock()
+        response.status_code = 500
+        mock_get.return_value = response
+
+        result = get_order.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service returned HTTP 500.")
+
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_invalid_json(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not json")
+        mock_get.return_value = response
+
+        result = get_order.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service returned an invalid order response.")
+
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_when_required_fields_missing(self, mock_get):
+        complete = {
+            "orderId": "ORD-1001",
+            "status": "shipped",
+            "item": "Mechanical Keyboard",
+            "amount": "599.00",
+        }
+        for field in ("orderId", "status", "item", "amount"):
+            with self.subTest(field=field):
+                payload = {key: value for key, value in complete.items() if key != field}
+                response = Mock()
+                response.status_code = 200
+                response.json.return_value = payload
+                mock_get.return_value = response
+
+                result = get_order.invoke({"order_id": "ORD-1001"})
+
+                self.assertEqual(result, "Trade service returned an invalid order response.")
+                self.assertNotIn("order_id=", result)
+
+        for label, payload in (
+            ("not an object", ["ORD-1001"]),
+            ("non-string amount", {**complete, "amount": 599}),
+        ):
+            with self.subTest(field=label):
+                response = Mock()
+                response.status_code = 200
+                response.json.return_value = payload
+                mock_get.return_value = response
+
+                result = get_order.invoke({"order_id": "ORD-1001"})
+
+                self.assertEqual(result, "Trade service returned an invalid order response.")
+                self.assertNotIn("order_id=", result)
+
 
 if __name__ == "__main__":
     unittest.main()

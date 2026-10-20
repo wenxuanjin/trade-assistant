@@ -1,10 +1,17 @@
 """HTTP request and response models. Like DTO / VO."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("消息不能为空")
+        return value
 
 
 class ChatResponse(BaseModel):

@@ -77,6 +77,35 @@ class GetTradeAccountTests(unittest.TestCase):
 
         self.assertEqual(result, "Trade service is unavailable.")
 
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_timeout(self, mock_get):
+        mock_get.side_effect = httpx.ReadTimeout("timed out")
+
+        result = get_trade_account.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service is unavailable.")
+
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_http_500(self, mock_get):
+        response = Mock()
+        response.status_code = 500
+        mock_get.return_value = response
+
+        result = get_trade_account.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service is unavailable.")
+
+    @patch("app.tools.httpx.get")
+    def test_returns_unavailable_on_invalid_json(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not json")
+        mock_get.return_value = response
+
+        result = get_trade_account.invoke({"order_id": "ORD-1001"})
+
+        self.assertEqual(result, "Trade service is unavailable.")
+
 
 if __name__ == "__main__":
     unittest.main()

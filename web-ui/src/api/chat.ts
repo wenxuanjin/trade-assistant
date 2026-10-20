@@ -14,7 +14,7 @@ export async function sendChat(message: string): Promise<string> {
   }
 
   if (!response.ok) {
-    throw new Error(`订单助手返回错误（HTTP ${response.status}）。`)
+    throw new Error("订单助手暂时无法回答，请稍后再试。")
   }
 
   let payload: unknown

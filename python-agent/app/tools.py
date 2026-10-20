@@ -19,6 +19,16 @@ def _normalize_order_id(order_id: str) -> str:
     return key
 
 
+_ORDER_FIELDS = ("orderId", "status", "item", "amount")
+
+
+def _valid_order_payload(order: object) -> bool:
+    """成功响应必须是包含全部必需字符串字段的对象。"""
+    if not isinstance(order, dict):
+        return False
+    return all(isinstance(order.get(field), str) for field in _ORDER_FIELDS)
+
+
 @tool
 def get_order(order_id: str) -> str:
     """Look up an order by order id.
@@ -31,18 +41,22 @@ def get_order(order_id: str) -> str:
     try:
         print(f"url: {url}")
         response = httpx.get(url, timeout=5.0)
+    except httpx.TimeoutException:
+        return "Trade service timed out."
     except httpx.HTTPError:
         return "Trade service is unavailable."
 
     if response.status_code == 404:
         return f"Order {normalized} was not found."
     if response.status_code != 200:
-        return "Trade service is unavailable."
+        return f"Trade service returned HTTP {response.status_code}."
 
     try:
         order = response.json()
     except ValueError:
-        return "Trade service is unavailable."
+        return "Trade service returned an invalid order response."
+    if not _valid_order_payload(order):
+        return "Trade service returned an invalid order response."
 
     return (
         f"order_id={order['orderId']}, status={order['status']}, "
