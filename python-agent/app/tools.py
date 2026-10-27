@@ -4,9 +4,11 @@ Start with one tool. Add more later as extra @tool functions,
 then pass them in app/agent.py.
 """
 
+from typing import Annotated
+
 import httpx
 from langchain_core.tools import tool
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from app.config import settings
 from app.schemas import TradeAccount, TradeFlow, TradeFlowStep
@@ -30,10 +32,15 @@ def _valid_order_payload(order: object) -> bool:
 
 
 @tool
-def get_order(order_id: str) -> str:
-    """Look up an order by order id.
+def get_order(
+    order_id: Annotated[str, Field(description="订单号。可以是 ORD-1001、ord-1001 或 1001。")],
+) -> str:
+    """按订单号查询这一笔订单的实时状态、商品和金额。
 
-    Use when the user asks about an order's status, item, or amount.
+    用户询问某一笔订单的状态、商品或金额时使用。
+    只依据本工具的返回回答，不要编造订单服务没有返回的信息。
+    订单不存在时如实说明未找到，不要虚构状态、商品或金额。
+    不要用它查询交易流程、支付账户或业务规范。
     """
     print(f"get_order: {order_id}")
     normalized = _normalize_order_id(order_id)
@@ -66,11 +73,15 @@ def get_order(order_id: str) -> str:
 
 
 @tool
-def get_trade_flow(order_id: str) -> dict | str:
-    """Look up the trade flow of an order by order id.
+def get_trade_flow(
+    order_id: Annotated[str, Field(description="订单号。可以是 ORD-1001、ord-1001 或 1001。")],
+) -> dict | str:
+    """按订单号查询交易流程，包括支付、发货、送达等步骤和时间。
 
-    Use when the user asks about transaction steps, payment, shipping,
-    or the delivery timeline.
+    用户询问交易步骤、支付、发货或送达时间线时使用。
+    只依据本工具返回的步骤事实回答。未完成的步骤不能说成已完成。
+    不要把预计时间或推断说成真实交易记录。
+    不要用它查询订单金额、支付账户或业务规范。
     """
     print(f"get_trade_flow: {order_id}")
     normalized = _normalize_order_id(order_id)
@@ -127,11 +138,14 @@ def _trade_service_unavailable() -> str:
 
 
 @tool
-def get_trade_account(order_id: str) -> dict | str:
-    """Look up the trade account of an order by order id.
+def get_trade_account(
+    order_id: Annotated[str, Field(description="订单号。可以是 ORD-1001、ord-1001 或 1001。")],
+) -> dict | str:
+    """按订单号查询支付账户、付款人、支付渠道和掩码账号。
 
-    Use when the user asks about the payment account, payer name,
-    payment channel, or masked account number.
+    用户询问付款账户、付款人或支付渠道时使用。
+    只依据本工具的返回回答，不要编造支付账户信息。
+    不要用它查询订单金额、交易流程或业务规范。
     """
     print(f"get_trade_account: {order_id}")
     normalized = _normalize_order_id(order_id)

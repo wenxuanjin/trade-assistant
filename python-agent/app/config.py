@@ -23,5 +23,11 @@ class Settings(BaseSettings):
     openai_model: str = "deepseek-v4-flash"
     trade_service_base_url: str = "http://localhost:8080"
 
+    # 本地 Embedding。与上面的聊天模型配置分开，不读取 OpenAI Key。
+    embedding_provider: str = "ollama"
+    embedding_model: str = "bge-m3"
+    embedding_base_url: str = "http://localhost:11434"
+    embedding_max_distance: float | None = None
+
 
 settings = Settings()

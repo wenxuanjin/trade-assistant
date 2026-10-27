@@ -6,8 +6,10 @@
 """
 
 import json
+import tempfile
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -17,6 +19,11 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from app.agent import graph
+from app.rag.ingest import load_knowledge_chunks
+from app.rag.retriever import build_index
+from app.rag.tool import knowledge_search, search_trade_knowledge
+from app.tools import get_order, get_trade_account, get_trade_flow
+from tests.test_rag_retriever import BrokenEmbeddings, HashEmbeddings
 
 _ORDER_PAYLOAD = {
     "orderId": "ORD-1001",
@@ -99,8 +106,11 @@ def _answer_from_tool_messages(messages: list[BaseMessage]) -> str:
             continue
         text = message.content if isinstance(message.content, str) else str(message.content)
         if message.name == "get_order":
-            amount = text.split("amount=", 1)[1].split(",", 1)[0].strip()
-            parts.append(f"金额是 {amount}")
+            if "was not found" in text:
+                parts.append("没有查到这笔订单")
+            else:
+                amount = text.split("amount=", 1)[1].split(",", 1)[0].strip()
+                parts.append(f"金额是 {amount}")
         elif message.name == "get_trade_account":
             channel = json.loads(text)["payment_channel"]
             parts.append(f"支付渠道是 {channel}")
@@ -112,6 +122,8 @@ def _answer_from_tool_messages(messages: list[BaseMessage]) -> str:
                 parts.append("已经送达")
             else:
                 parts.append("尚未送达，因为配送步骤还是 pending")
+        elif message.name == "search_trade_knowledge":
+            parts.append(text)
     if not parts:
         raise AssertionError("组织最终回答时还没有任何工具结果")
     return "；".join(parts) + "。"
@@ -181,11 +193,14 @@ class AgentBehaviorTests(unittest.TestCase):
             result = graph.invoke({"messages": [("user", question)]})
         self.assertEqual(
             model.bound_tool_names,
-            ["get_order", "get_trade_flow", "get_trade_account"],
+            ["get_order", "get_trade_flow", "get_trade_account", "search_trade_knowledge"],
         )
         system = model.seen[0][0]
         self.assertIsInstance(system, SystemMessage)
-        self.assertIn("If no order id is given, ask for one.", system.content)
+        self.assertIn(
+            "如果用户没有给出订单号，并且回答确实需要某一笔订单的实时事实，才向用户追问订单号。",
+            system.content,
+        )
         return result, model, mock_get
 
     def test_amount_question_calls_get_order_and_answers_from_tool_result(self):
@@ -314,8 +329,187 @@ class AgentBehaviorTests(unittest.TestCase):
         self.assertEqual(_tool_calls(result["messages"]), [])
         self.assertEqual(_tool_messages(result["messages"]), [])
         self.assertEqual(len(model.seen), 1)
-        self.assertIn("ask for one", model.seen[0][0].content)
+        self.assertIn("如果用户没有给出订单号，并且回答确实需要某一笔订单的实时事实，才向用户追问订单号。", model.seen[0][0].content)
         mock_get.assert_not_called()
+
+
+@contextmanager
+def _configured_knowledge_search(
+    embeddings,
+    index_dir: Path,
+    max_distance: float | None,
+    top_k: int = 3,
+    embedding_model_id: str | None = None,
+):
+    saved = (
+        knowledge_search.embeddings,
+        knowledge_search.index_dir,
+        knowledge_search.top_k,
+        knowledge_search.max_distance,
+        knowledge_search.embedding_model_id,
+    )
+    knowledge_search.embeddings = embeddings
+    knowledge_search.index_dir = index_dir
+    knowledge_search.top_k = top_k
+    knowledge_search.max_distance = max_distance
+    knowledge_search.embedding_model_id = embedding_model_id
+    try:
+        yield
+    finally:
+        (
+            knowledge_search.embeddings,
+            knowledge_search.index_dir,
+            knowledge_search.top_k,
+            knowledge_search.max_distance,
+            knowledge_search.embedding_model_id,
+        ) = saved
+
+
+class KnowledgeToolTests(unittest.TestCase):
+    def test_order_tools_keep_their_parameters(self):
+        self.assertEqual(get_order.name, "get_order")
+        self.assertEqual(get_trade_flow.name, "get_trade_flow")
+        self.assertEqual(get_trade_account.name, "get_trade_account")
+        self.assertEqual(set(get_order.args), {"order_id"})
+        self.assertEqual(set(get_trade_flow.args), {"order_id"})
+        self.assertEqual(set(get_trade_account.args), {"order_id"})
+        self.assertEqual(search_trade_knowledge.name, "search_trade_knowledge")
+        self.assertEqual(set(search_trade_knowledge.args), {"query"})
+
+    def test_unconfigured_embeddings_are_not_a_normal_miss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with _configured_knowledge_search(None, Path(directory), None):
+                text = search_trade_knowledge.invoke({"query": "待处理是什么意思"})
+
+        self.assertIn("status: RETRIEVAL_ERROR", text)
+        self.assertIn("Embedding 未配置", text)
+        self.assertNotIn("无充分依据", text)
+        self.assertNotIn("不是真实企业政策", text)
+
+    def test_knowledge_question_returns_evidence_to_the_model(self):
+        chunks = load_knowledge_chunks(Path(__file__).resolve().parents[1] / "knowledge")
+        target = next(chunk for chunk in chunks if chunk.section == "订单状态定义 / 待处理")
+        embeddings = HashEmbeddings()
+        question = "待处理状态是什么意思"
+        with tempfile.TemporaryDirectory() as directory:
+            index_dir = Path(directory)
+            build_index(chunks, embeddings, index_dir)
+            with _configured_knowledge_search(embeddings, index_dir, max_distance=0.0):
+                result, model, mock_get = AgentBehaviorTests()._ask(
+                    question,
+                    [[
+                        {
+                            "name": "search_trade_knowledge",
+                            "args": {"query": target.content},
+                            "id": "call_knowledge",
+                        }
+                    ]],
+                )
+
+        tool_message = _tool_messages(result["messages"])[0]
+        self.assertEqual(tool_message.name, "search_trade_knowledge")
+        self.assertIn("status: HIT", tool_message.content)
+        self.assertIn(target.title, tool_message.content)
+        self.assertIn(target.section, tool_message.content)
+        self.assertIn(target.source, tool_message.content)
+        self.assertIn(target.chunk_id, tool_message.content)
+        self.assertIn(target.content, tool_message.content)
+        self.assertIn("squared_l2_distance", tool_message.content)
+        self.assertEqual(_tool_messages(model.seen[1])[0].content, tool_message.content)
+        self.assertIn(tool_message.content, result["messages"][-1].content)
+        self.assertIn("只询问业务规范的问题不需要订单号。", model.seen[0][0].content)
+        mock_get.assert_not_called()
+
+    def test_flow_then_knowledge_returns_both_results(self):
+        chunks = load_knowledge_chunks(Path(__file__).resolve().parents[1] / "knowledge")
+        target = next(chunk for chunk in chunks if chunk.section == "发货后未送达的排查流程 / 核对订单是否已发货")
+        embeddings = HashEmbeddings()
+        with tempfile.TemporaryDirectory() as directory:
+            index_dir = Path(directory)
+            build_index(chunks, embeddings, index_dir)
+            with _configured_knowledge_search(embeddings, index_dir, max_distance=0.0):
+                result, model, mock_get = AgentBehaviorTests()._ask(
+                    "ORD-1001 为什么还没送达，规范上要怎么排查",
+                    [
+                        [{"name": "get_trade_flow", "args": {"order_id": "ORD-1001"}, "id": "call_flow"}],
+                        [{
+                            "name": "search_trade_knowledge",
+                            "args": {"query": target.content},
+                            "id": "call_knowledge",
+                        }],
+                    ],
+                )
+
+        self.assertEqual(
+            [call["name"] for call in _tool_calls(result["messages"])],
+            ["get_trade_flow", "search_trade_knowledge"],
+        )
+        self.assertEqual([message.name for message in _tool_messages(model.seen[1])], ["get_trade_flow"])
+        self.assertEqual(
+            [message.name for message in _tool_messages(model.seen[2])],
+            ["get_trade_flow", "search_trade_knowledge"],
+        )
+        final = result["messages"][-1].content
+        self.assertIn("尚未送达，因为配送步骤还是 pending", final)
+        self.assertIn("status: HIT", final)
+        self.assertIn(target.section, final)
+        mock_get.assert_called_once()
+
+    def test_order_and_knowledge_can_be_called_in_one_response(self):
+        chunks = load_knowledge_chunks(Path(__file__).resolve().parents[1] / "knowledge")
+        target = next(chunk for chunk in chunks if chunk.section == "退款处理规则 / 未发货退款")
+        embeddings = HashEmbeddings()
+        with tempfile.TemporaryDirectory() as directory:
+            index_dir = Path(directory)
+            build_index(chunks, embeddings, index_dir)
+            with _configured_knowledge_search(embeddings, index_dir, max_distance=0.0):
+                result, model, mock_get = AgentBehaviorTests()._ask(
+                    "ORD-1001 的金额是多少，未发货退款规则是什么",
+                    [[
+                        {"name": "get_order", "args": {"order_id": "ORD-1001"}, "id": "call_order"},
+                        {
+                            "name": "search_trade_knowledge",
+                            "args": {"query": target.content},
+                            "id": "call_knowledge",
+                        },
+                    ]],
+                )
+
+        returned = {(message.name, message.tool_call_id) for message in _tool_messages(model.seen[1])}
+        self.assertEqual(
+            returned,
+            {("get_order", "call_order"), ("search_trade_knowledge", "call_knowledge")},
+        )
+        final = result["messages"][-1].content
+        self.assertIn("金额是 599.00", final)
+        self.assertIn(target.section, final)
+        self.assertIn("未发货的订单可以按未出库处理退款", final)
+        mock_get.assert_called_once()
+
+    def test_insufficient_index_not_ready_and_retrieval_error_stay_distinct(self):
+        chunks = load_knowledge_chunks(Path(__file__).resolve().parents[1] / "knowledge")
+        embeddings = HashEmbeddings()
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / "ready"
+            missing = Path(directory) / "missing"
+            build_index(chunks, embeddings, ready)
+            with _configured_knowledge_search(embeddings, ready, max_distance=0.0):
+                missed = search_trade_knowledge.invoke({"query": "与规范完全无关的句子"})
+            with _configured_knowledge_search(embeddings, missing, max_distance=0.0):
+                not_ready = search_trade_knowledge.invoke({"query": "待处理是什么意思"})
+            with _configured_knowledge_search(BrokenEmbeddings(), ready, max_distance=0.0):
+                failed = search_trade_knowledge.invoke({"query": "待处理是什么意思"})
+
+        self.assertIn("status: INSUFFICIENT_EVIDENCE", missed)
+        self.assertIn("检索已执行，但无充分依据。", missed)
+        self.assertNotIn("业务规则不存在", missed)
+        self.assertIn("status: INDEX_NOT_READY", not_ready)
+        self.assertIn("索引尚未准备好", not_ready)
+        self.assertNotIn("无充分依据", not_ready)
+        self.assertIn("status: RETRIEVAL_ERROR", failed)
+        self.assertIn("RuntimeError", failed)
+        self.assertIn("这不是一次正常的无命中", failed)
+        self.assertNotIn("无充分依据", failed)
 
 
 if __name__ == "__main__":

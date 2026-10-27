@@ -15,3 +15,6 @@ __pycache__/
 
 # Java / Maven
 target/
+
+# 本地生成的 FAISS 索引和检索评测输出。knowledge/ 下的 Markdown 原文需要保留。
+python-agent/data/
